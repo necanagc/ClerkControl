@@ -1,0 +1,11 @@
+# secrets
+.env
+.env.*
+
+# build artifacts
+/taskbot
+bot
+*.exe
+
+# go
+.gocache/
