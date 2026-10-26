@@ -1,11 +1,10 @@
-# secrets
-.env
-.env.*
-
-# build artifacts
-/taskbot
-bot
-*.exe
-
-# go
-.gocache/
+  # secrets
+  .env
+- .env.*
++ .env.local
+  
+  # build artifacts
+  /taskbot
+- bot
++ /bot
+  *.exe

@@ -14,11 +14,6 @@ import (
 	tgbotapi "github.com/skinass/telegram-bot-api/v5"
 )
 
-var (
-	BotToken   = ""
-	WebhookURL = ""
-)
-
 type Task struct {
 	ID         int
 	Title      string
