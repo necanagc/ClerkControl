@@ -18,5 +18,21 @@ services:
       timeout: 3s
       retries: 10
 
+  bot:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: taskbot:local
+    container_name: taskbot
+    profiles: ["full"]
+    env_file: .env
+    environment:
+      # внутри compose-сети база доступна по имени сервиса, а не по localhost
+      DATABASE_URL: postgres://taskbot:taskbot@postgres:5432/taskbot?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

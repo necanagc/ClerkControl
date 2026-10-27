@@ -1,7 +1,67 @@
 # TaskManagerBot
 
+[![CI](https://github.com/necanagc/ClerkControl/actions/workflows/ci.yml/badge.svg)](https://github.com/necanagc/ClerkControl/actions/workflows/ci.yml)
+
 Telegram-бот для управления задачами: личный список в личных сообщениях и общий — в группе.
 Задачи создаются, назначаются на исполнителя и закрываются прямо в чате, без внешней панели.
+
+## Быстрый старт
+
+Нужны: Go 1.27+, Docker и токен от [@BotFather](https://t.me/BotFather).
+
+```bash
+git clone git@github.com:necanagc/ClerkControl.git
+cd ClerkControl
+
+make db-up                 # 1. PostgreSQL в Docker (порт только на 127.0.0.1)
+cp .env.example .env       # 2. вписать TG_TOKEN в .env
+make run                   # 3. миграции + запуск бота
+```
+
+Ожидаемые строки в логе:
+
+```
+level=INFO msg="storage ready" driver=postgres
+level=INFO msg="starting" bot=my_bot mode=polling
+```
+
+Дальше в Telegram: `/new Починить деплой`, затем `/tasks`.
+
+Остановить бота — `Ctrl+C`, базу — `make db-down`.
+
+### Проверка, что всё работает
+
+```bash
+make db-psql
+# внутри psql:
+\dt          # должна быть таблица tasks и goose_db_version
+\q
+
+curl -s "https://api.telegram.org/bot$TG_TOKEN/getMe" | head -c 200
+```
+
+### Если что-то не так
+
+| Симптом | Причина | Что делать |
+|---|---|---|
+| `config: TG_TOKEN не задан` | нет `.env` или пустой токен | `cp .env.example .env`, вписать токен |
+| `postgres: ping` при старте | база не поднялась или занят порт 5432 | `make db-up`, `docker compose ps` |
+| `bind: address already in use` при `db-up` | локальный PostgreSQL уже слушает 5432 | поменять порт в `docker-compose.yml` на `5433` и в `DATABASE_URL` |
+| нет таблицы `tasks` | том создан старым запуском, `init.sql` не выполнялся | `make db-reset` |
+| `Unauthorized` | токен отозван или неверный | перевыпустить в @BotFather |
+
+### Запуск без базы
+
+Если `DATABASE_URL` пуст, бот поднимается на хранилище в памяти: удобно для демонстрации,
+но задачи исчезнут при перезапуске. В лог пишется предупреждение.
+
+### Запуск в Docker целиком
+
+```bash
+cp .env.example .env       # вписать TG_TOKEN
+docker compose --profile full up -d --build
+docker compose logs -f bot
+```
 
 ## Возможности
 
@@ -29,24 +89,6 @@ Telegram-бот для управления задачами: личный сп�
 | `/resolve_<id>` | отметить задачу выполненной |
 
 В группе команды можно адресовать боту: `/tasks@my_bot`. Команды, адресованные другому боту, игнорируются.
-
-## Быстрый старт
-
-Требования: Go 1.27+, Docker, токен от [@BotFather](https://t.me/BotFather).
-
-```bash
-git clone git@github.com:necanagc/ClerkControl.git
-cd ClerkControl
-
-make db-up                 # PostgreSQL в Docker
-cp .env.example .env       # вписать TG_TOKEN
-
-make run
-```
-
-При старте бот применяет миграции и запускается в режиме long polling — публичный адрес и HTTPS не нужны.
-Если `DATABASE_URL` пуст, бот поднимется на хранилище в памяти: удобно для быстрой проверки,
-но задачи исчезнут при перезапуске (в лог пишется предупреждение).
 
 ## База данных
 
@@ -78,6 +120,19 @@ tasks(id, chat_id, title, creator_id, creator, assignee_id, assignee, done)
 **Миграции** лежат в `internal/storage/postgres/migrations` и встраиваются в бинарник через
 `embed`, применяются библиотекой `goose` при старте. Драйвер — `pgx/v5` с пулом соединений.
 Ограничение времени на миграции — 30 секунд, чтобы бот не висел вечно на недоступной базе.
+
+## Docker
+
+`deploy/Dockerfile` — multi-stage: сборка в `golang:1.27-alpine`, запуск в
+`gcr.io/distroless/static-debian12:nonroot`.
+
+- `CGO_ENABLED=0` — статический бинарник, без libc в финальном образе;
+- `-trimpath`, `-ldflags="-s -w"` — воспроизводимая сборка и меньший размер;
+- non-root пользователь — запуск не от root;
+- distroless содержит CA-сертификаты, поэтому HTTPS к Telegram работает.
+
+Приложение не запускается раньше базы: в compose используется
+`depends_on: condition: service_healthy` вместе с healthcheck Postgres.
 
 ## Архитектура
 
@@ -113,7 +168,9 @@ internal/storage/memory/          хранилище в памяти (для т�
 internal/storage/postgres/        пул pgx, SQL-репозиторий, миграции
 internal/notify/                  уведомления по событиям сервиса
 internal/telegram/                источник обновлений, роутинг, рендеринг
+deploy/Dockerfile                 сборка образа приложения
 deploy/postgres/init.sql          создание тестовой базы при первом запуске
+.github/workflows/ci.yml          CI: форматирование, vet, тесты, сборка образа
 ```
 
 ## Решения и почему именно так
@@ -143,14 +200,19 @@ make test-db    # интеграционные тесты репозитория
 ```
 
 Интеграционные тесты пропускаются, если не задан `TEST_DATABASE_URL` — поэтому `make test`
-работает на чистой машине.
+работает на чистой машине. В CI база поднимается сервисным контейнером.
+
+## CI
+
+`.github/workflows/ci.yml` на каждый push и pull request: проверка `gofmt`, `go vet`,
+`go test -race` (включая интеграционные тесты с Postgres), сборка бинарника и Docker-образа.
 
 ## План
 
 - [x] вынести домен, хранилище и транспорт в отдельные пакеты
 - [x] long polling, graceful shutdown, дедупликация обновлений
 - [x] PostgreSQL: пул соединений, миграции, индексы
+- [x] Docker-образ приложения и docker compose целиком
+- [x] CI: `go vet`, `go test -race`, интеграционные тесты на сервисном контейнере
 - [ ] webhook-режим для продакшена
-- [ ] Docker-образ приложения и docker compose целиком
-- [ ] CI: `go vet`, `go test -race`, интеграционные тесты на сервисном контейнере
 - [ ] inline-кнопки вместо команд с идентификаторами
