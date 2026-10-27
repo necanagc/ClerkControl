@@ -27,13 +27,26 @@ func New(api Sender, log *slog.Logger) *Notifier {
 	return &Notifier{api: api, log: log}
 }
 
-// Assigned повторяет прежнюю рассылку: прежнему исполнителю и автору.
+// Assigned уведомляет участников: нового исполнителя, прежнего исполнителя и автора.
 func (n *Notifier) Assigned(ctx context.Context, t task.Task, actorID int64, actorName string, previous *int64) {
-	if previous != nil && *previous != actorID {
-		n.send(*previous, fmt.Sprintf(`Задача "%s" назначена на @%s`, t.Title, actorName))
+	newID := int64(0)
+	if t.AssigneeID != nil {
+		newID = *t.AssigneeID
 	}
-	if previous == nil && t.CreatorID != actorID {
-		n.send(t.CreatorID, fmt.Sprintf(`Задача "%s" назначена на @%s`, t.Title, actorName))
+
+	// Прежнему исполнителю — что задача ушла.
+	if previous != nil && *previous != newID {
+		n.send(*previous, fmt.Sprintf(`Задача "%s" больше не на вас`, t.Title))
+	}
+
+	// Новому исполнителю — если назначал не он сам.
+	if newID != 0 && newID != actorID {
+		n.send(newID, fmt.Sprintf(`Вам назначили задачу "%s" (от @%s)`, t.Title, actorName))
+	}
+
+	// Автору — если он ни исполнитель, ни тот, кто назначал.
+	if t.CreatorID != actorID && t.CreatorID != newID {
+		n.send(t.CreatorID, fmt.Sprintf(`Задача "%s" назначена на @%s`, t.Title, t.Assignee))
 	}
 }
 

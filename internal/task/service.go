@@ -56,23 +56,30 @@ func (s *Service) List(ctx context.Context, f Filter) ([]Task, error) {
 	return s.repo.List(ctx, f)
 }
 
-// Assign назначает задачу на пользователя.
+// Assign назначает задачу на самого пользователя.
 func (s *Service) Assign(ctx context.Context, chatID int64, id int, userID int64, username string) (Task, error) {
+	return s.AssignTo(ctx, chatID, id, userID, username, userID, username)
+}
+
+// AssignTo назначает задачу на другого пользователя.
+// targetID/targetName — на кого назначают, actorID/actorName — кто это сделал:
+// различие нужно, чтобы уведомления ушли правильным людям.
+func (s *Service) AssignTo(ctx context.Context, chatID int64, id int, targetID int64, targetName string, actorID int64, actorName string) (Task, error) {
 	t, err := s.openTask(ctx, chatID, id)
 	if err != nil {
 		return Task{}, err
 	}
 
 	previous := t.AssigneeID
-	assignee := userID
+	assignee := targetID
 	t.AssigneeID = &assignee
-	t.Assignee = username
+	t.Assignee = targetName
 
 	if err := s.repo.Update(ctx, t); err != nil {
 		return Task{}, err
 	}
 	if s.sink != nil {
-		s.sink.Assigned(ctx, t, userID, username, previous)
+		s.sink.Assigned(ctx, t, actorID, actorName, previous)
 	}
 
 	return t, nil

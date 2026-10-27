@@ -2,37 +2,48 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/skinass/telegram-bot-api/v5"
 
 	"taskbot/internal/task"
+	"taskbot/internal/user"
 )
 
-// Sender — минимальная часть BotAPI, нужная боту.
-type Sender interface {
+// API — минимальная часть BotAPI, нужная боту:
+// отправка сообщений, правка сообщений и ответы на нажатия кнопок.
+type API interface {
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+	Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
 }
 
 // Bot обрабатывает апдейты и не знает, откуда они пришли.
 type Bot struct {
-	api   Sender
+	api   API
 	svc   *task.Service
+	users user.Repository
 	self  string
 	log   *slog.Logger
 	dedup *dedup
+
+	mu      sync.Mutex
+	pending map[int64]int // chatID -> ID сообщения, в ответ на которое ждём название
 }
 
 // New собирает обработчик. self — username бота, нужен для /command@bot.
-func New(api Sender, svc *task.Service, self string, log *slog.Logger) *Bot {
+func New(api API, svc *task.Service, users user.Repository, self string, log *slog.Logger) *Bot {
 	return &Bot{
-		api:   api,
-		svc:   svc,
-		self:  self,
-		log:   log,
-		dedup: newDedup(24*time.Hour, 1000),
+		api:     api,
+		svc:     svc,
+		users:   users,
+		self:    self,
+		log:     log,
+		dedup:   newDedup(24*time.Hour, 1000),
+		pending: make(map[int64]int),
 	}
 }
 
@@ -62,10 +73,23 @@ func Run(ctx context.Context, src Source, b *Bot) error {
 	}
 }
 
-// handle разбирает сообщение и вызывает нужную команду.
+// handle разбирает апдейт: нажатие кнопки или текстовую команду.
 func (b *Bot) handle(ctx context.Context, update tgbotapi.Update) error {
+	if update.CallbackQuery != nil {
+		b.handleCallback(ctx, *update.CallbackQuery)
+		return nil
+	}
+
 	msg := update.Message
 	if msg == nil || msg.From == nil || msg.Chat == nil {
+		return nil
+	}
+
+	b.rememberUser(ctx, msg.From)
+
+	// Ответ на приглашение «напишите название» создаёт задачу.
+	if msg.ReplyToMessage != nil && b.consumePending(msg.Chat.ID, msg.ReplyToMessage.MessageID) {
+		b.createTask(ctx, msg.Chat.ID, msg.From.ID, msg.From.UserName, msg.Text)
 		return nil
 	}
 
@@ -91,8 +115,10 @@ func (b *Bot) handle(ctx context.Context, update tgbotapi.Update) error {
 	username := msg.From.UserName
 
 	switch {
-	case head == "/start" || head == "/help":
-		b.send(chatID, helpText())
+	case head == "/start":
+		b.cmdStart(chatID, displayName(msg.From))
+	case head == "/help":
+		b.cmdHelp(chatID)
 	case head == "/tasks":
 		b.cmdTasks(ctx, chatID, userID)
 	case head == "/my":
@@ -101,38 +127,142 @@ func (b *Bot) handle(ctx context.Context, update tgbotapi.Update) error {
 		b.cmdTasksOwner(ctx, chatID, userID)
 	case head == "/new":
 		b.cmdNew(ctx, chatID, userID, username, rest)
+	case head == "/cancel":
+		b.clearPending(chatID)
+		b.send(chatID, "Ок, отменил — ничего не создано.")
 	case strings.HasPrefix(head, "/assign_"):
 		id, ok := parseTaskID(strings.TrimPrefix(head, "/assign_"))
 		if !ok {
-			b.send(chatID, "Неверный ID задачи")
+			b.send(chatID, "🤔 Не понял номер задачи. Пример: /assign_5")
 			return nil
 		}
-		b.cmdAssign(ctx, chatID, userID, username, id)
+		reply, ref := assignTarget(msg, rest)
+		b.cmdAssign(ctx, chatID, userID, username, id, reply, ref)
 	case strings.HasPrefix(head, "/unassign_"):
 		id, ok := parseTaskID(strings.TrimPrefix(head, "/unassign_"))
 		if !ok {
-			b.send(chatID, "Неверный ID задачи")
+			b.send(chatID, "🤔 Не понял номер задачи. Пример: /unassign_5")
 			return nil
 		}
 		b.cmdUnassign(ctx, chatID, userID, id)
 	case strings.HasPrefix(head, "/resolve_"):
 		id, ok := parseTaskID(strings.TrimPrefix(head, "/resolve_"))
 		if !ok {
-			b.send(chatID, "Неверный ID задачи")
+			b.send(chatID, "🤔 Не понял номер задачи. Пример: /resolve_5")
 			return nil
 		}
 		b.cmdResolve(ctx, chatID, userID, username, id)
 	default:
 		b.log.Debug("unknown command", "cmd", head, "chat_id", chatID)
-		b.send(chatID, "Неизвестная команда. Список команд: /help")
+		b.send(chatID, "🤔 Не знаю такой команды.\nПосмотреть всё: /help")
 	}
 
 	return nil
 }
 
-// send отправляет текст и не считает ошибку доставки фатальной.
+// displayName выбирает, как обратиться к пользователю.
+func displayName(u *tgbotapi.User) string {
+	if u.UserName != "" {
+		return "@" + u.UserName
+	}
+
+	return u.FirstName
+}
+
+// send отправляет текст без клавиатуры.
 func (b *Bot) send(chatID int64, text string) {
 	if _, err := b.api.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
 		b.log.Error("send message", "chat_id", chatID, "err", err)
 	}
+}
+
+// sendWithKeyboard отправляет текст с inline-кнопками.
+func (b *Bot) sendWithKeyboard(chatID int64, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+
+	if _, err := b.api.Send(msg); err != nil {
+		b.log.Error("send message", "chat_id", chatID, "err", err)
+	}
+}
+
+// edit правит существующее сообщение: так кнопки не плодят новые сообщения.
+func (b *Bot) edit(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, keyboard)
+
+	if _, err := b.api.Request(edit); err != nil && !isNotModified(err) {
+		b.log.Error("edit message", "chat_id", chatID, "message_id", messageID, "err", err)
+	}
+}
+
+// answerCallback обязателен: без него у пользователя крутятся «часики» на кнопке.
+func (b *Bot) answerCallback(callbackID, text string) {
+	if _, err := b.api.Request(tgbotapi.NewCallback(callbackID, text)); err != nil {
+		b.log.Debug("answer callback", "err", err)
+	}
+}
+
+// isNotModified — Telegram отвечает ошибкой, если текст и клавиатура не изменились.
+func isNotModified(err error) bool {
+	var apiErr *tgbotapi.Error
+
+	return errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "message is not modified")
+}
+
+// setPending запоминает сообщение, ответ на которое считается названием задачи.
+func (b *Bot) setPending(chatID int64, messageID int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.pending[chatID] = messageID
+}
+
+// consumePending сообщает, ждали ли мы ответ именно на это сообщение.
+// Запись удаляется: одно приглашение — одна задача.
+func (b *Bot) consumePending(chatID int64, messageID int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	want, ok := b.pending[chatID]
+	if !ok || want != messageID {
+		return false
+	}
+
+	delete(b.pending, chatID)
+
+	return true
+}
+
+// clearPending сбрасывает приглашение (команда /cancel).
+func (b *Bot) clearPending(chatID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	delete(b.pending, chatID)
+}
+
+// rememberUser сохраняет ник и имя: без этого @username нельзя превратить в id.
+func (b *Bot) rememberUser(ctx context.Context, u *tgbotapi.User) {
+	if u == nil || u.IsBot {
+		return
+	}
+
+	err := b.users.Upsert(ctx, user.User{ID: u.ID, Username: u.UserName, FirstName: u.FirstName})
+	if err != nil {
+		b.log.Warn("remember user", "user_id", u.ID, "err", err)
+	}
+}
+
+// assignTarget решает, на кого назначать: ответ на сообщение важнее @username.
+func assignTarget(msg *tgbotapi.Message, rest string) (*tgbotapi.User, string) {
+	if reply := msg.ReplyToMessage; reply != nil && reply.From != nil && !reply.From.IsBot {
+		return reply.From, ""
+	}
+
+	ref := strings.TrimSpace(rest)
+	if strings.HasPrefix(ref, "@") {
+		return nil, strings.TrimPrefix(ref, "@")
+	}
+
+	return nil, ""
 }

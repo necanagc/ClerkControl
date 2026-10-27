@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"taskbot/internal/task"
+	"taskbot/internal/user"
 )
 
 // testRepo подключается к базе из TEST_DATABASE_URL и очищает таблицу.
@@ -32,7 +33,7 @@ func testRepo(t *testing.T) *Repo {
 	t.Cleanup(repo.Close)
 
 	// TRUNCATE ... RESTART IDENTITY — каждый тест начинает с id = 1.
-	const truncate = `TRUNCATE tasks RESTART IDENTITY`
+	const truncate = `TRUNCATE tasks, users RESTART IDENTITY`
 	if _, err := repo.pool.Exec(ctx, truncate); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -182,5 +183,38 @@ func TestMigrateIdempotent(t *testing.T) {
 
 	if _, err := repo.List(ctx, task.Filter{}); err != nil {
 		t.Fatalf("list после повторной миграции: %v", err)
+	}
+}
+
+func TestUsersUpsertAndLookup(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+	users := repo.Users()
+
+	if err := users.Upsert(ctx, user.User{ID: 9, Username: "ivan", FirstName: "Иван"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := users.ByUsername(ctx, "@Ivan")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got.ID != 9 || got.Username != "ivan" {
+		t.Fatalf("неверный пользователь: %+v", got)
+	}
+
+	// Повторный upsert обновляет ник, а не создаёт дубликат.
+	if err := users.Upsert(ctx, user.User{ID: 9, Username: "ivan_new", FirstName: "Иван"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := users.ByUsername(ctx, "ivan"); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("старый ник должен исчезнуть: %v", err)
+	}
+	if _, err := users.ByUsername(ctx, "ivan_new"); err != nil {
+		t.Fatalf("новый ник не найден: %v", err)
+	}
+
+	if _, err := users.ByUsername(ctx, "nobody"); !errors.Is(err, user.ErrNotFound) {
+		t.Fatalf("ожидали ErrNotFound, получили %v", err)
 	}
 }
