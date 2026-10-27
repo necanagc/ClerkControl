@@ -14,4 +14,5 @@ type Source interface {
 }
 
 // allowedUpdates ограничивает поток только нужными типами.
-var allowedUpdates = []string{"message"}
+// callback_query обязателен: без него нажатия inline-кнопок не доставляются.
+var allowedUpdates = []string{"message", "callback_query"}
