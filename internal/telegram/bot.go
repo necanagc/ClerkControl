@@ -91,6 +91,8 @@ func (b *Bot) handle(ctx context.Context, update tgbotapi.Update) error {
 	username := msg.From.UserName
 
 	switch {
+	case head == "/start" || head == "/help":
+		b.send(chatID, helpText())
 	case head == "/tasks":
 		b.cmdTasks(ctx, chatID, userID)
 	case head == "/my":
@@ -122,6 +124,7 @@ func (b *Bot) handle(ctx context.Context, update tgbotapi.Update) error {
 		b.cmdResolve(ctx, chatID, userID, username, id)
 	default:
 		b.log.Debug("unknown command", "cmd", head, "chat_id", chatID)
+		b.send(chatID, "Неизвестная команда. Список команд: /help")
 	}
 
 	return nil

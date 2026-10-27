@@ -52,6 +52,8 @@ func run() error {
 	}
 	api.Debug = cfg.Debug
 
+	telegram.SetCommands(api, log)
+
 	svc := task.NewService(store, notify.New(api, log))
 	handler := telegram.New(api, svc, api.Self.UserName, log)
 	src := telegram.NewPollingSource(api)

@@ -46,3 +46,20 @@ func taskAssigned(t task.Task) string {
 func taskCompleted(t task.Task) string {
 	return fmt.Sprintf(`Задача "%s" выполнена`, t.Title)
 }
+
+// helpText — статический текст справки: единственное место, где перечислены команды.
+func helpText() string {
+	return `Что я умею:
+
+/new <текст> — создать задачу
+/tasks — все открытые задачи чата
+/my — задачи, назначенные на меня
+/owner — задачи, которые создал я
+/help — эта справка
+
+/assign_<id> — взять задачу на себя
+/unassign_<id> — снять задачу с себя
+/resolve_<id> — отметить выполненной
+
+ID задачи виден в списке: например, /assign_5.`
+}
