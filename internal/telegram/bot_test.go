@@ -199,15 +199,56 @@ func TestNewCreatesTaskWithButtons(t *testing.T) {
 	}
 }
 
-func TestEmptyNewIsRejected(t *testing.T) {
+func TestEmptyNewStartsDialog(t *testing.T) {
 	bot, api := newTestBot()
 
-	if err := bot.handle(context.Background(), messageUpdate("/new   ")); err != nil {
+	// Telegram при выборе команды из меню отправляет ровно «/new».
+	if err := bot.handle(context.Background(), messageUpdate("/new")); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 
-	if got := api.lastSent(t).Text; !strings.Contains(got, "Нужен текст") {
-		t.Fatalf("ожидали подсказку: %s", got)
+	msg := api.lastSent(t)
+	if !strings.Contains(msg.Text, "название") {
+		t.Fatalf("ожидали приглашение ввести название: %s", msg.Text)
+	}
+
+	reply, ok := msg.ReplyMarkup.(tgbotapi.ForceReply)
+	if !ok || !reply.ForceReply {
+		t.Fatalf("ожидали ForceReply: %T", msg.ReplyMarkup)
+	}
+}
+
+func TestEmptyNewThenReplyCreatesTask(t *testing.T) {
+	bot, api := newTestBot()
+	ctx := context.Background()
+
+	if err := bot.handle(ctx, messageUpdate("/new")); err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	api.mu.Lock()
+	promptID := api.nextID
+	api.mu.Unlock()
+
+	if err := bot.handle(ctx, replyUpdate("Купить хлеб", promptID)); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+
+	if got := api.lastSent(t).Text; !strings.Contains(got, "создана") {
+		t.Fatalf("задача не создана: %s", got)
+	}
+}
+
+func TestNewWithTextCreatesImmediately(t *testing.T) {
+	bot, api := newTestBot()
+
+	if err := bot.handle(context.Background(), messageUpdate("/new Купить хлеб")); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	msg := api.lastSent(t)
+	if !strings.Contains(msg.Text, "создана") {
+		t.Fatalf("ожидали создание задачи: %s", msg.Text)
 	}
 }
 
@@ -523,5 +564,40 @@ func TestAssignWithoutTargetAssignsSelf(t *testing.T) {
 
 	if got := api.lastSent(t).Text; !strings.Contains(got, "на вас") {
 		t.Fatalf("ожидали назначение на себя: %s", got)
+	}
+}
+
+func TestAnotherUserCannotAnswerPrompt(t *testing.T) {
+	bot, api := newTestBot()
+	ctx := context.Background()
+
+	// Олег начал диалог.
+	if err := bot.handle(ctx, messageUpdate("/new")); err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	api.mu.Lock()
+	promptID := api.nextID
+	sentBefore := len(api.sent)
+	api.mu.Unlock()
+
+	// Иван отвечает на чужое приглашение — задача создаваться не должна.
+	ivan := tgbotapi.Update{
+		UpdateID: 5,
+		Message: &tgbotapi.Message{
+			Text:           "чужое название",
+			Chat:           &tgbotapi.Chat{ID: 100},
+			From:           &tgbotapi.User{ID: 8, UserName: "ivan"},
+			ReplyToMessage: &tgbotapi.Message{MessageID: promptID},
+		},
+	}
+	if err := bot.handle(ctx, ivan); err != nil {
+		t.Fatalf("ivan: %v", err)
+	}
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.sent) != sentBefore {
+		t.Fatalf("чужой ответ не должен создавать задачу: %v", api.sent[sentBefore:])
 	}
 }

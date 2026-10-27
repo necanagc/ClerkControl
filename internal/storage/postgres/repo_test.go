@@ -218,3 +218,40 @@ func TestUsersUpsertAndLookup(t *testing.T) {
 		t.Fatalf("ожидали ErrNotFound, получили %v", err)
 	}
 }
+
+// groupChatID — реальный идентификатор группы: он больше int4,
+// поэтому параметры в запросах обязаны быть bigint.
+const groupChatID int64 = -5477175719
+
+func TestGroupChatIDs(t *testing.T) {
+	repo := testRepo(t)
+	ctx := context.Background()
+
+	created, err := repo.Create(ctx, newTask(groupChatID, "задача в группе"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := repo.Get(ctx, groupChatID, created.ID)
+	if err != nil {
+		t.Fatalf("get по групповому чату: %v", err)
+	}
+	if got.ChatID != groupChatID {
+		t.Fatalf("не тот чат: %d", got.ChatID)
+	}
+
+	assignee := int64(5117060868)
+	created.AssigneeID = &assignee
+	created.Assignee = "triangulation2207"
+	if err := repo.Update(ctx, created); err != nil {
+		t.Fatalf("update по групповому чату: %v", err)
+	}
+
+	list, err := repo.List(ctx, task.Filter{ChatID: groupChatID, OnlyOpen: true})
+	if err != nil {
+		t.Fatalf("list по групповому чату: %v", err)
+	}
+	if len(list) != 1 || !list[0].AssignedTo(assignee) {
+		t.Fatalf("неожиданный список: %+v", list)
+	}
+}

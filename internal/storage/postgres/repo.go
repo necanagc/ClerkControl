@@ -54,10 +54,12 @@ func (r *Repo) Create(ctx context.Context, t task.Task) (task.Task, error) {
 	return t, nil
 }
 
+// $6::bigint обязателен: без каста Postgres выводит тип параметра из литерала 0 (int4),
+// и идентификаторы групп (-5 000 000 000) перестают помещаться в параметр.
 const updateTask = `
 UPDATE tasks
 SET title = $1, assignee_id = $2, assignee = $3, done = $4
-WHERE id = $5 AND ($6 = 0 OR chat_id = $6)`
+WHERE id = $5 AND ($6::bigint = 0 OR chat_id = $6)`
 
 // Update перезаписывает изменяемые поля задачи.
 func (r *Repo) Update(ctx context.Context, t task.Task) error {
@@ -74,10 +76,11 @@ func (r *Repo) Update(ctx context.Context, t task.Task) error {
 	return nil
 }
 
+// $2::bigint — по той же причине, что и в updateTask: ID групп не влезают в int4.
 const selectTask = `
 SELECT id, chat_id, title, creator_id, creator, assignee_id, assignee, done
 FROM tasks
-WHERE id = $1 AND ($2 = 0 OR chat_id = $2)`
+WHERE id = $1 AND ($2::bigint = 0 OR chat_id = $2)`
 
 // Get возвращает задачу по ID в пределах чата (chatID = 0 — любой чат).
 func (r *Repo) Get(ctx context.Context, chatID int64, id int) (task.Task, error) {

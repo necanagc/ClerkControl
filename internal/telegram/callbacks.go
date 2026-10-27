@@ -35,7 +35,7 @@ func (b *Bot) handleCallback(ctx context.Context, cq tgbotapi.CallbackQuery) {
 		b.answerCallback(cq.ID, "")
 	case "new":
 		b.answerCallback(cq.ID, "")
-		b.promptNew(chatID)
+		b.promptNew(chatID, userID)
 	case "hlp":
 		b.answerCallback(cq.ID, "")
 		b.edit(chatID, messageID, helpText(), backKeyboard())

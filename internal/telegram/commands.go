@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	tgbotapi "github.com/skinass/telegram-bot-api/v5"
 
@@ -37,14 +38,20 @@ func (b *Bot) cmdTasksOwner(ctx context.Context, chatID, userID int64) {
 	b.showList(ctx, chatID, 0, userID, filterOwner, 0)
 }
 
-// cmdNew создаёт задачу из остатка сообщения.
+// cmdNew создаёт задачу, если текст передан сразу.
+// Пустой /new (например, выбранный в меню команд) запускает диалог.
 func (b *Bot) cmdNew(ctx context.Context, chatID, userID int64, username, title string) {
+	if strings.TrimSpace(title) == "" {
+		b.promptNew(chatID, userID)
+		return
+	}
+
 	b.createTask(ctx, chatID, userID, username, title)
 }
 
 // promptNew просит прислать название задачи ответом на сообщение.
-func (b *Bot) promptNew(chatID int64) {
-	msg := tgbotapi.NewMessage(chatID, "📝 Напишите название задачи одним сообщением.\n\nОтменить: /cancel")
+func (b *Bot) promptNew(chatID, userID int64) {
+	msg := tgbotapi.NewMessage(chatID, "📝 Напишите название задачи одним сообщением.\n\nНапример: Купить хлеб\nОтменить: /cancel")
 	msg.ReplyMarkup = tgbotapi.ForceReply{ForceReply: true}
 
 	sent, err := b.api.Send(msg)
@@ -53,7 +60,7 @@ func (b *Bot) promptNew(chatID int64) {
 		return
 	}
 
-	b.setPending(chatID, sent.MessageID)
+	b.setPending(chatID, sent.MessageID, userID)
 }
 
 // createTask — общий путь создания задачи для команды и кнопки.

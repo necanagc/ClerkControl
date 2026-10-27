@@ -31,7 +31,7 @@ type Bot struct {
 	dedup *dedup
 
 	mu      sync.Mutex
-	pending map[int64]int // chatID -> ID сообщения, в ответ на которое ждём название
+	pending map[int64]pendingPrompt // chatID -> приглашение, ждущее названия
 }
 
 // New собирает обработчик. self — username бота, нужен для /command@bot.
@@ -43,7 +43,7 @@ func New(api API, svc *task.Service, users user.Repository, self string, log *sl
 		self:    self,
 		log:     log,
 		dedup:   newDedup(24*time.Hour, 1000),
-		pending: make(map[int64]int),
+		pending: make(map[int64]pendingPrompt),
 	}
 }
 
@@ -88,7 +88,7 @@ func (b *Bot) handle(ctx context.Context, update tgbotapi.Update) error {
 	b.rememberUser(ctx, msg.From)
 
 	// Ответ на приглашение «напишите название» создаёт задачу.
-	if msg.ReplyToMessage != nil && b.consumePending(msg.Chat.ID, msg.ReplyToMessage.MessageID) {
+	if msg.ReplyToMessage != nil && b.consumePending(msg.Chat.ID, msg.ReplyToMessage.MessageID, msg.From.ID) {
 		b.createTask(ctx, msg.Chat.ID, msg.From.ID, msg.From.UserName, msg.Text)
 		return nil
 	}
@@ -209,22 +209,28 @@ func isNotModified(err error) bool {
 	return errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "message is not modified")
 }
 
+// pendingPrompt — приглашение ввести название задачи.
+type pendingPrompt struct {
+	messageID int
+	userID    int64
+}
+
 // setPending запоминает сообщение, ответ на которое считается названием задачи.
-func (b *Bot) setPending(chatID int64, messageID int) {
+func (b *Bot) setPending(chatID int64, messageID int, userID int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.pending[chatID] = messageID
+	b.pending[chatID] = pendingPrompt{messageID: messageID, userID: userID}
 }
 
 // consumePending сообщает, ждали ли мы ответ именно на это сообщение.
 // Запись удаляется: одно приглашение — одна задача.
-func (b *Bot) consumePending(chatID int64, messageID int) bool {
+func (b *Bot) consumePending(chatID int64, messageID int, userID int64) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	want, ok := b.pending[chatID]
-	if !ok || want != messageID {
+	if !ok || want.messageID != messageID || want.userID != userID {
 		return false
 	}
 
